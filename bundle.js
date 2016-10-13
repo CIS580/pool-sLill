@@ -10,17 +10,31 @@ var game = new Game(canvas, update, render);
 var image = new Image();
 image.src = 'assets/pool_balls.png';
 
-var stick = {x: 0, y: 0}
-var balls = []
+var axisList = [];
+var pockets = [
+    { x: 0, y: 0 },
+    { x: 512, y: 0 },
+    { x: 1024, y: 0 },
+    { x: 0, y: 512 },
+    { x: 512, y: 512 },
+    { x: 1024, y: 512 },
+
+];
+
+var stick = { x: 0, y: 0, power: 0, charge: false };
+var balls = [];
 for(var i = 0; i < 18; i++){
-  balls.push({
+    balls.push({
+        number: i,
     position: {x: 0, y: 0},
     angle: 0,
     velocity: {x:0, y:0},
-    color: 'gray'
-  });
+    color: 'gray',
+        pocketed: false
+    });
+    axisList.push(balls[i]);
 }
-rack();
+axisList.sort(function (a, b) { return a.position.x - b.position.x });
 
 /**
  * Helper function to rack the balls
@@ -53,16 +67,16 @@ function rack() {
   balls[11].position.x = 185;
   balls[11].position.y = 314;
 
-  balls[12].position.x = 158;
-  balls[12].position.y = 206;
-  balls[5].position.x = 158;
+  balls[12].position.x = 157;
+  balls[12].position.y = 205;
+  balls[5].position.x = 157;
   balls[5].position.y = 236;
-  balls[13].position.x = 158;
+  balls[13].position.x = 157;
   balls[13].position.y = 266;
-  balls[6].position.x = 158;
+  balls[6].position.x = 157;
   balls[6].position.y = 297;
-  balls[14].position.x = 158;
-  balls[14].position.y = 327;
+  balls[14].position.x = 157;
+  balls[14].position.y = 328;
 }
 
 /**
@@ -76,12 +90,31 @@ canvas.onmousemove = function(event) {
 }
 
 /**
- * Strike the cue ball with the stick
+ * Begin charging the stick
  */
 canvas.onmousedown = function(event) {
   event.preventDefault();
 
-  // TODO: strike the cue ball with cue stick
+    // TODO: strike the cue ball with cue stick
+
+  stick.power = 0;
+  stick.charging = true;
+}
+
+    /**
+    * Strike the cue ball with the stick
+    */
+canvas.onmouseup = function (event) {
+    var direction = {
+        x: balls[15].position.x - stick.x,
+        y: balls[15].position.y - stick.y
+    }
+    var denom = direction.x * direction.x + direction.y * direction.y;
+    direction.x /= denom;
+    direction.y /= denom;
+    balls[15].velocity.x = stick.power * direction.x;
+    balls[15].velocity.y = stick.power * direction.y;
+    stick.charging = false;
 }
 
 /**
@@ -106,25 +139,117 @@ masterLoop(performance.now());
  */
 function update(elapsedTime) {
 
-  // move balls
-  balls.forEach(function(ball) {
-    ball.position.x += elapsedTime * ball.velocity.x;
-    ball.position.y += elapsedTime * ball.velocity.y;
-  });
-
-  // process collisions
-  var i, j, collisionPairs = [];
-  for(i = 0; i < 15; i++) {
-    for(j = i; j < 15; j++){
-      if(i != j &&
-        850 > Math.pow(balls[i].position.x - balls[j].position.x, 2) + Math.pow(balls[i].position.y - balls[j].position.y, 2)
-      ){
-        balls[i].color = 'red';
-        balls[j].color = 'green';
-        collisionPairs.push({a: balls[i], b: balls[j]});
-      }
+    // charge cue stick
+    if (stick.charging) {
+        stick.power += 0.1 * elapsedTime;
     }
-  }
+
+    // move balls
+    balls.forEach(function (ball, index) {
+        ball.color = 'gray';
+        ball.position.x += elapsedTime * ball.velocity.x;
+        ball.position.y += elapsedTime * ball.velocity.y;
+        // bounce off bumpers
+        if (ball.position.x < 15 || ball.position.x > 1009) {
+            ball.velocity.x = -ball.velocity.x;
+        }
+        if (ball.position.y < 15 || ball.position.y > 497) {
+            ball.velocity.y = -ball.velocity.y;
+        }
+        // apply friction
+        ball.velocity.x *= 0.999;
+        ball.velocity.y *= 0.999;
+
+        // check for pocket collisions
+        pockets.forEach(function (pocket) {
+            var distSq = Math.pow(ball.position.x - pocket.x, 2) +
+                         Math.pow(ball.position.y - pocket.y, 2);
+            if (distSq < 25 * 25) {
+                if (index == 15) {
+                    // scratch
+                    ball.velocity.x = 0;
+                    ball.velocity.y = 0;
+                    ball.position.x = 732;
+                    ball.position.y = 266;
+                } else {
+                    // ball in the pocket
+                    ball.pocketed = true;
+                    ball.velocity.x = 0;
+                    ball.velocity.y = 0;
+                    ball.position.x = -50;
+                }
+            }
+        });
+    });
+
+    // re-sort our axis list by x position,
+    // now that all our balls have moved.
+    axisList.sort(function (a, b) { return a.position.x - b.position.x });
+
+    // The active list will hold all balls
+    // we are currently considering for collisions
+    var active = [];
+
+    // The potentially colliding list will hold
+    // all pairs of balls that overlap in the x-axis,
+    // and therefore potentially collide
+    var potentiallyColliding = [];
+
+    // For each ball in the axis list, we consider it
+    // in order
+    axisList.forEach(function (ball, aindex) {
+        // remove balls from the active list that are
+        // too far away from our current ball to collide
+        // The Array.prototype.filter() method will return
+        // an array containing only elements for which the
+        // provided function's return value was true -
+        // in this case, all balls that are closer than 30
+        // units to our current ball on the x-axis
+        active = active.filter(function (oball) {
+            return ball.position.x - oball.position.x < 30;
+        });
+        // Since only balls within colliding distance of
+        // our current ball are left in the active list,
+        // we pair them with the current ball and add
+        // them to the potentiallyColliding array.
+        active.forEach(function (oball, bindex) {
+            potentiallyColliding.push({ a: oball, b: ball });
+        });
+        // Finally, we add our current ball to the active
+        // array to consider it in the next pass down the
+        // axisList
+        active.push(ball);
+    });
+
+    // At this point we have a potentaillyColliding array
+    // containing all pairs overlapping in the x-axis.  Now
+    // we want to check for REAL collisions between these pairs.
+    // We'll store those in our collisions array.
+    var collisions = [];
+    potentiallyColliding.forEach(function (pair) {
+        // Calculate the distance between balls; we'll keep
+        // this as the squared distance, as we just need to
+        // compare it to a distance equal to the radius of
+        // both balls summed.  Squaring this second value
+        // is less computationally expensive than taking
+        // the square root to get the actual distance.
+        // In fact, we can cheat a bit more and use a constant
+        // for the sum of radii, as we know the radius of our
+        // balls won't change.
+        var distSquared =
+          Math.pow(pair.a.position.x - pair.b.position.x, 2) +
+          Math.pow(pair.a.position.y - pair.b.position.y, 2);
+        // (15 + 15)^2 = 900 -> sum of two balls' raidius squared
+        if (distSquared < 900) {
+            // Color the collision pair for visual debugging
+            pair.a.color = 'red';
+            pair.b.color = 'green';
+            // Push the colliding pair into our collisions array
+            collisions.push(pair);
+        }
+    });
+
+    // TODO: Process ball collisions
 }
 
 /**
@@ -135,8 +260,17 @@ function update(elapsedTime) {
   * @param {CanvasRenderingContext2D} ctx the context to render to
   */
 function render(elapsedTime, ctx) {
+    //Render the table
   ctx.fillStyle = "#3F6922";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    //Render the pockets
+  ctx.fillStyle = "#333333";
+  pockets.forEach(function (pocket) {
+      ctx.beginPath();
+      ctx.arc(pocket.x, pocket.y, 25, 0, 2 * Math.PI);
+      ctx.fill();
+  });
 
   // Render the balls
   balls.forEach(function(ball, index) {
@@ -163,7 +297,14 @@ function render(elapsedTime, ctx) {
   ctx.beginPath();
   ctx.moveTo(balls[15].position.x, balls[15].position.y);
   ctx.lineTo(stick.x, stick.y);
-  ctx.strokeStyle = "darkgrey";
+  if (stick.charging)
+  {
+      ctx.strokeStyle = "red";
+  }
+  else
+  {
+      ctx.strokeStyle = "darkgrey";
+  }
   ctx.stroke();
   ctx.beginPath();
 }
